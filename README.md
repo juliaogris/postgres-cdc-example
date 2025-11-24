@@ -1,114 +1,174 @@
-# PostgreSQL CDC with wal2json Example
+# PostgreSQL CDC Example
 
-This project demonstrates Change Data Capture (CDC) between two PostgreSQL databases using wal2json.
+This project demonstrates Change Data Capture (CDC) and replication between two
+PostgreSQL databases using two different approaches:
+
+1. Manual CDC using wal2json
+2. Native PostgreSQL logical replication (pub/sub)
 
 ## Components
 
 1. **writer** - Continuously writes random data to the source database
-2. **replicator** - Performs bulk copy and then continuous CDC replication to target database
-3. **PostgreSQL instances** - Two PostgreSQL databases (source with wal2json, target without)
+2. **replicator** - Manual CDC implementation using wal2json for change capture
+3. **pubsub** - Native PostgreSQL logical replication using publication/subscription
+4. **PostgreSQL instances** - Two PostgreSQL databases with wal2json support
 
 ## Docker Commands to Run PostgreSQL Instances
 
-  docker-compose up -d # Start both databases
-  docker-compose logs -f # View logs
-  docker-compose down # Stop databases
-  docker-compose down -v # Stop and remove volumes (clean slate)
+    docker-compose up -d    # Start both databases with WAL2JSON extension
+    docker-compose logs -f  # View logs
+    docker-compose down     # Stop databases
+    docker-compose down -v  # Stop and remove volumes (clean slate)
 
-## Running the Go Programs
+## Manual CDC with wal2json (replicator)
 
-### 1. Install Dependencies
-```bash
-go mod download
-```
+Start writer (Data Generator) in one terminal to create data in the source DB:
 
-### 2. Run the Writer Program
-This will continuously write random data to the source database:
-```bash
-go run ./writer
-```
+    go run ./writer
 
-### 3. Run the Replicator Program
-In a separate terminal, run the replicator which will:
-- Bulk copy existing data
-- Set up CDC with wal2json
-- Continuously replicate changes
+Start replicator in another terminal to consume changes from the source DB:
 
-```bash
-go run ./replicator
-```
+    go run ./replicator
+
+- Manual parses of wal2json output
+- Bulk copies existing data first
+- Polls for changes every 2 seconds
+- Full control over change processing
+
+#### Native PostgreSQL Logical Replication (pubsub)
+
+Start writer (Data Generator) in one terminal to create data in the source DB:
+
+    go run ./writer
+
+Start pubsub in another terminal to consume changes from the source DB:
+
+    go run ./pubsub
+
+- Native PostgreSQL logical replication
+- Automatic change propagation
+- Lower latency than polling
+- Simpler and more reliable
+- Built-in monitoring of replication status
 
 ## Verify Replication
 
 Connect to both databases and check the data:
 
-```bash
-# Connect to source database
-docker exec -it postgres-source psql -U postgres -d testdb -c "SELECT COUNT(*) FROM person;"
-
-# Connect to target database
-docker exec -it postgres-target psql -U postgres -d testdb -c "SELECT COUNT(*) FROM person;"
-
-# Watch real-time changes in target
-docker exec -it postgres-target psql -U postgres -d testdb -c "SELECT * FROM person ORDER BY id DESC LIMIT 10;"
-```
+    docker exec -it postgres-source psql -U postgres -d testdb -c "SELECT COUNT(*) FROM person;"
+    docker exec -it postgres-target psql -U postgres -d testdb -c "SELECT COUNT(*) FROM person;"
 
 ## Architecture
 
+### Manual CDC with wal2json (replicator)
 ```
 ┌─────────────┐       ┌──────────────────┐       ┌──────────────┐
 │  writer.go  │──────>│ Source PostgreSQL│<──────│ replicator.go│
-│             │       │   (port 5432)    │       │              │
+│             │       │   (port 5429)    │       │              │
 │ Writes      │       │   with wal2json  │       │ 1. Bulk copy │
-│ random data │       └──────────────────┘       │ 2. CDC       │
-│ every 1s    │                                  │              │
+│ random data │       └──────────────────┘       │ 2. Parse WAL │
+│ every 1s    │                                  │ 3. Apply     │
 └─────────────┘                                  │              │
                                                  │              │
                       ┌──────────────────┐       │              │
                       │ Target PostgreSQL│<──────│              │
-                      │   (port 5433)    │       └──────────────┘
+                      │   (port 5431)    │       └──────────────┘
                       └──────────────────┘
 ```
 
+### Native Logical Replication (pubsub)
+```
+┌─────────────┐       ┌──────────────────┐       ┌─────────────┐
+│  writer.go  │──────>│ Source PostgreSQL│<──────│  pubsub.go  │
+│             │       │   (port 5429)    │       │             │
+│ Writes      │       │   PUBLICATION    │       │ 1. Creates  │
+│ random data │       └──────────────────┘       │    pub/sub  │
+│ every 1s    │              │                   │ 2. Bulk copy│
+└─────────────┘              │                   │ 3. Monitors │
+                             │                   └─────────────┘
+                             │                         │
+                             │ Logical                 │ Initial
+                             │ Replication             │ Bulk Copy
+                             │ (ongoing)               │
+                             ↓                         ↓
+                      ┌──────────────────┐
+                      │ Target PostgreSQL│
+                      │   (port 5431)    │
+                      │   SUBSCRIPTION   │
+                      └──────────────────┘
+```
+
+## Comparison: replicator vs pubsub
+
+| Feature | replicator (wal2json) | pubsub (native) |
+|---------|----------------------|-----------------|
+| **Setup Complexity** | More complex - manual parsing | Simple - built-in feature |
+| **Performance** | Polling-based (2s delay) | Real-time push |
+| **Reliability** | Requires manual error handling | PostgreSQL handles retries |
+| **Flexibility** | Full control over processing | Standard PostgreSQL behavior |
+| **Use Case** | Custom transformations needed | Direct replication |
+| **Maintenance** | Requires monitoring slot consumption | Self-managing |
+
 ## Important Notes
 
-1. The source PostgreSQL must have:
+1. Both PostgreSQL instances are configured with:
    - `wal_level=logical`
    - wal2json extension installed
    - Sufficient replication slots
 
-2. The replicator program uses a simplified CDC approach. For production:
-   - Consider using `pglogrepl` library for better replication protocol handling
-   - Implement proper error handling and retry logic
-   - Handle schema changes appropriately
-   - Use connection pooling
+2. For the **replicator** approach:
+   - Uses wal2json v2 format for parsing changes
+   - Polls for changes every 2 seconds
+   - Manual bulk copy before starting CDC
+   - Requires careful management of replication slots
 
-3. The bulk copy uses `ON CONFLICT DO NOTHING` to handle duplicate keys
+3. For the **pubsub** approach:
+   - Uses native PostgreSQL logical replication
+   - Automatic, real-time change propagation
+   - PostgreSQL handles all the complexity
+   - Better for production use cases
 
-4. CDC changes are polled every 2 seconds. Adjust based on your needs.
+4. Docker networking:
+   - Source PostgreSQL: port 5429
+   - Target PostgreSQL: port 5431
+   - Containers communicate via Docker network
 
 ## Troubleshooting
 
+### Replication slot issues
 If you get "replication slot already exists" error:
 ```sql
--- Connect to source database and drop the slot
+-- For replicator: Connect to source database and drop the slot
 SELECT pg_drop_replication_slot('migration_slot');
+
+-- For pubsub: Drop subscription first, then publication
+-- On target:
+DROP SUBSCRIPTION IF EXISTS person_subscription;
+-- On source:
+DROP PUBLICATION IF EXISTS person_publication;
 ```
 
-If wal2json is not available:
+### Check wal2json availability
 ```sql
--- Check available output plugins
+-- Check if wal2json is available
 SELECT * FROM pg_available_extensions WHERE name LIKE '%wal%';
+
+-- Test creating a slot with wal2json
+SELECT pg_create_logical_replication_slot('test_slot', 'wal2json');
+SELECT pg_drop_replication_slot('test_slot');
 ```
 
-## Cleanup
+### Monitor replication status
+```sql
+-- Check active replication slots
+SELECT * FROM pg_replication_slots;
 
-```bash
-# Stop and remove containers and volumes
-docker-compose down -v
+-- Check publication (on source)
+SELECT * FROM pg_publication;
 
-# Or if using individual containers
-docker stop postgres-source postgres-target
-docker rm postgres-source postgres-target
-docker volume prune
+-- Check subscription (on target)
+SELECT * FROM pg_subscription;
+
+-- Check subscription status
+SELECT * FROM pg_stat_subscription;
 ```
