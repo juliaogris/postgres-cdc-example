@@ -1,0 +1,50 @@
+services:
+  # Source PostgreSQL with wal2json
+  postgres-source:
+    build: .
+    container_name: postgres-source
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: testdb
+    command:
+      - postgres
+      - -c
+      - shared_preload_libraries=wal2json
+      - -c
+      - wal_level=logical
+      - -c
+      - max_wal_senders=10
+      - -c
+      - max_replication_slots=10
+    ports:
+      - "5429:5432"
+    volumes:
+      - postgres-source-data:/var/lib/postgresql/data
+
+  # Target PostgreSQL with wal2json
+  postgres-target:
+    build: .
+    container_name: postgres-target
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: testdb
+    command:
+      - postgres
+      - -c
+      - shared_preload_libraries=wal2json
+      - -c
+      - wal_level=logical
+      - -c
+      - max_wal_senders=10
+      - -c
+      - max_replication_slots=10
+    ports:
+      - "5431:5432"
+    volumes:
+      - postgres-target-data:/var/lib/postgresql/data
+
+volumes:
+  postgres-source-data:
+  postgres-target-data:
