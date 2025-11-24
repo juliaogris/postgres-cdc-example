@@ -35,20 +35,21 @@ Start replicator in another terminal to consume changes from the source DB:
 - Polls for changes every 2 seconds
 - Full control over change processing
 
-#### Native PostgreSQL Logical Replication (pubsub)
+## Native PostgreSQL Logical Replication (pubsub)
 
 Start writer (Data Generator) in one terminal to create data in the source DB:
 
     go run ./writer
 
-Start pubsub in another terminal to consume changes from the source DB:
+Start pubsub in another terminal to set up filtered replication:
 
     go run ./pubsub
 
 - Native PostgreSQL logical replication
-- Automatic change propagation
-- Lower latency than polling
-- Simpler and more reliable
+- Filters data: Only replicates records with EVEN scores
+- PostgreSQL automatically handles initial data copy
+- Real-time change propagation
+- No manual bulk copy needed (uses `copy_data = true`)
 - Built-in monitoring of replication status
 
 ## Verify Replication
@@ -63,7 +64,7 @@ Connect to both databases and check the data:
 ### Manual CDC with wal2json (replicator)
 ```
 ┌─────────────┐       ┌──────────────────┐       ┌──────────────┐
-│  writer.go  │──────>│ Source PostgreSQL│<──────│ replicator.go│
+│  writer     │──────>│ Source PostgreSQL│<──────│ replicator   │
 │             │       │   (port 5429)    │       │              │
 │ Writes      │       │   with wal2json  │       │ 1. Bulk copy │
 │ random data │       └──────────────────┘       │ 2. Parse WAL │
@@ -79,23 +80,23 @@ Connect to both databases and check the data:
 ### Native Logical Replication (pubsub)
 ```
 ┌─────────────┐       ┌──────────────────┐       ┌─────────────┐
-│  writer.go  │──────>│ Source PostgreSQL│<──────│  pubsub.go  │
+│  writer     │──────>│ Source PostgreSQL│<──────│  pubsub     │
 │             │       │   (port 5429)    │       │             │
 │ Writes      │       │   PUBLICATION    │       │ 1. Creates  │
-│ random data │       └──────────────────┘       │    pub/sub  │
-│ every 1s    │              │                   │ 2. Bulk copy│
-└─────────────┘              │                   │ 3. Monitors │
-                             │                   └─────────────┘
-                             │                         │
-                             │ Logical                 │ Initial
-                             │ Replication             │ Bulk Copy
-                             │ (ongoing)               │
-                             ↓                         ↓
-                      ┌──────────────────┐
-                      │ Target PostgreSQL│
-                      │   (port 5431)    │
-                      │   SUBSCRIPTION   │
-                      └──────────────────┘
+│ random data │       │   WHERE score%2=0│       │    pub/sub  │
+│ every 1s    │       └──────────────────┘       │ 2. Monitors │
+└─────────────┘              │                   └─────────────┘
+                             │
+                             │ Logical Replication
+                             │ (copy_data=true)
+                             │ Only EVEN scores
+                             ↓
+                        ┌───────────────────────────────┐
+                        │ Target PostgreSQL             │
+                        │   (port 5431)                 │
+                        │   SUBSCRIPTION                │
+                        │   (filtered data only)        │
+                        └───────────────────────────────┘
 ```
 
 ## Comparison: replicator vs pubsub
@@ -105,8 +106,9 @@ Connect to both databases and check the data:
 | **Setup Complexity** | More complex - manual parsing | Simple - built-in feature |
 | **Performance** | Polling-based (2s delay) | Real-time push |
 | **Reliability** | Requires manual error handling | PostgreSQL handles retries |
-| **Flexibility** | Full control over processing | Standard PostgreSQL behavior |
-| **Use Case** | Custom transformations needed | Direct replication |
+| **Data Filtering** | Manual filtering in application | Native WHERE clause support |
+| **Initial Sync** | Manual bulk copy | Automatic with copy_data=true |
+| **Use Case** | Custom transformations needed | Filtered or direct replication |
 | **Maintenance** | Requires monitoring slot consumption | Self-managing |
 
 ## Important Notes
@@ -124,8 +126,10 @@ Connect to both databases and check the data:
 
 3. For the **pubsub** approach:
    - Uses native PostgreSQL logical replication
-   - Automatic, real-time change propagation
-   - PostgreSQL handles all the complexity
+   - Filters data using WHERE clause (only even scores)
+   - PostgreSQL automatically copies initial data (copy_data=true)
+   - Real-time change propagation
+   - No manual bulk copy needed
    - Better for production use cases
 
 4. Docker networking:
